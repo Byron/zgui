@@ -692,6 +692,36 @@ impl Runtime {
         &mut self.windows
     }
 
+    /// Settles a surface's queued input and reactive layout without drawing it.
+    ///
+    /// Clipboard, menu and window commands have the same ordering as a normal frame. The surface
+    /// keeps its redraw obligation, so a host may call this before routing input to embedded
+    /// content or reading layout, then draw once after it has prepared that content.
+    pub fn settle(&mut self, cx: &dyn PlatformCx, surface: SurfaceId) {
+        let mut fired = Vec::new();
+        if let Some(window) = self.window_mut(surface) {
+            window.settle(cx.clock().as_ref());
+            fired = window.take_menu_actions();
+            Self::put_on_clipboard(cx, window);
+            Self::answer_pastes(cx, window);
+            self.sweep_other_windows(surface);
+        }
+        self.finish_turn(cx, fired);
+    }
+
+    fn finish_turn(&mut self, cx: &dyn PlatformCx, fired: Vec<zgui_platform::MenuId>) {
+        for id in fired {
+            self.app_event(cx, zgui_platform::AppEvent::Menu(id));
+        }
+        self.apply_menu(cx);
+        if !self.commands.is_empty() {
+            self.drain_window_commands(cx);
+        }
+        if !self.clipboards.is_empty() {
+            self.clipboards.drain(cx);
+        }
+    }
+
     /// The queue this runtime carries out window work from.
     ///
     /// What the public window API is built on, and what a test opens a second window through.
@@ -1227,23 +1257,7 @@ impl AppHandler for Runtime {
                 }
             }
         }
-        // A chord nothing in the document claimed runs its menu action, after the frame.
-        for id in fired {
-            self.app_event(cx, zgui_platform::AppEvent::Menu(id));
-        }
-        // A frame just ran, and an effect inside it may have rebuilt the menu.
-        self.apply_menu(cx);
-        // A frame just ran, and a listener, an effect or a timer inside it may have asked for a
-        // window. This is the first point since then that holds a platform context.
-        if !self.commands.is_empty() {
-            self.drain_window_commands(cx);
-        }
-        // The editor's own copies were put on the clipboard while the frame ran, so what the
-        // application asked for lands after them: a component that copies and pastes in one batch
-        // pastes what it just copied.
-        if !self.clipboards.is_empty() {
-            self.clipboards.drain(cx);
-        }
+        self.finish_turn(cx, fired);
     }
 
     fn wake(&mut self, cx: &dyn PlatformCx, reason: WakeReason) {

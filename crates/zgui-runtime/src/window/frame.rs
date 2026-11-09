@@ -202,6 +202,61 @@ impl Window {
         }
     }
 
+    /// Settles queued input and reactive changes without painting or presenting.
+    ///
+    /// A host sharing keyboard input with embedded content needs the focus and geometry produced
+    /// by earlier pointer events before it can route the next key. Waiting for a presentation to
+    /// obtain that answer puts the renderer's acquisition latency on the input path.
+    ///
+    /// This runs with the window's scope current, updates style, layout and geometry observations,
+    /// and enters newly mounted focus traps. Timers, animations, renderer reconfiguration, paint,
+    /// accessibility publication and arena recycling remain the next frame's work. Damage and
+    /// retired fragments accumulate until that frame, including across several settles.
+    pub fn settle(&mut self, clock: &dyn Clock) {
+        match self.scope.as_ref().map(|scope| scope.owner().clone()) {
+            Some(owner) => owner.with(|| self.settle_pending(clock.timestamp())),
+            None => self.settle_pending(clock.timestamp()),
+        }
+    }
+
+    fn settle_pending(&mut self, timestamp: zgui_vocab::Timestamp) {
+        self.gate.begin_frame();
+        self.document.borrow().begin_frame();
+        let drained = self.drain_input(timestamp);
+        self.end_press_after_drag();
+        self.engine.disable_filters_if_sheets_changed();
+        self.gate.requests_serviced();
+        let flush = zgui_reactive::flush();
+        self.binding.checkpoint();
+        self.carry_out_commands(timestamp);
+        self.apply_secure_changes();
+        self.drop_focus_that_went(timestamp);
+        // A resize has already recorded the viewport. Its layout can settle without rebuilding
+        // the swapchain, which may wait for the GPU and belongs only on the render path.
+        self.device_epoch();
+        self.restyle_and_relayout_after_delivery();
+        self.enter_owed_focus_traps(timestamp);
+        self.dispatch_scroll(timestamp);
+        let observed = self.deliver_observations();
+        self.forget_carried_scrolls();
+        self.update_cursor();
+        if self.hit.generation() != self.rehit_seen {
+            self.rehit_seen = self.hit.generation();
+            self.rehit();
+        }
+        let changed = self.document.borrow().end_frame();
+        let owed = self.gate.end_frame();
+        if drained
+            || flush.needs_another_frame
+            || observed
+            || changed
+            || owed
+            || self.owes_frame_for_document()
+        {
+            self.request_frame();
+        }
+    }
+
     /// Presents the frame the renderer holds, now that the platform is ready for it.
     ///
     /// The frame was composed and its damage retired when it ran. This is only the copy to the
