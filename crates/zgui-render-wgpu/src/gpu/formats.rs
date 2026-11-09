@@ -176,9 +176,8 @@ fn choose_surface_format(
 
 /// How the compositor should treat the surface's alpha.
 ///
-/// Pinned rather than left to `Auto`, which is a deferral dressed as a default. `PostMultiplied` is
-/// excluded on principle: it would require an un-premultiply step that exists nowhere in this
-/// pipeline, so offering it would mean two answers to what a colour is.
+/// Metal exposes its transparent layer as `PostMultiplied`; keep the same premultiplied pixels
+/// used by native egui presentation. Other backends require an explicit premultiplied mode.
 fn choose_alpha_mode(
     alpha_modes: &[wgpu::CompositeAlphaMode],
     opaque: bool,
@@ -188,6 +187,10 @@ fn choose_alpha_mode(
     }
     if alpha_modes.contains(&wgpu::CompositeAlphaMode::PreMultiplied) {
         return wgpu::CompositeAlphaMode::PreMultiplied;
+    }
+    #[cfg(target_vendor = "apple")]
+    if alpha_modes.contains(&wgpu::CompositeAlphaMode::PostMultiplied) {
+        return wgpu::CompositeAlphaMode::PostMultiplied;
     }
     tracing::info!(
         "the surface offers no premultiplied alpha mode; the window is composited opaque instead"
@@ -311,7 +314,7 @@ mod tests {
 
     #[test]
     fn a_translucent_window_asks_for_premultiplied_alpha_and_settles_for_opaque() {
-        let both = [Alpha::Opaque, Alpha::PreMultiplied];
+        let both = [Alpha::Opaque, Alpha::PostMultiplied, Alpha::PreMultiplied];
         assert_eq!(
             choose(&[Format::Bgra8Unorm], &both, false, true).alpha_mode,
             Alpha::PreMultiplied
@@ -336,11 +339,26 @@ mod tests {
         );
     }
 
+    #[cfg(not(target_vendor = "apple"))]
     #[test]
     fn post_multiplied_is_never_chosen_even_when_it_is_the_only_translucent_mode() {
         let offered = [Alpha::Opaque, Alpha::PostMultiplied];
         assert_eq!(
             choose(&[Format::Bgra8Unorm], &offered, false, true).alpha_mode,
+            Alpha::Opaque
+        );
+    }
+
+    #[cfg(target_vendor = "apple")]
+    #[test]
+    fn a_metal_surface_uses_its_available_transparent_mode() {
+        let offered = [Alpha::Opaque, Alpha::PostMultiplied];
+        assert_eq!(
+            choose(&[Format::Bgra8Unorm], &offered, false, true).alpha_mode,
+            Alpha::PostMultiplied
+        );
+        assert_eq!(
+            choose(&[Format::Bgra8Unorm], &offered, true, true).alpha_mode,
             Alpha::Opaque
         );
     }

@@ -162,11 +162,15 @@ pub fn instance_flags() -> wgpu::InstanceFlags {
 
 /// The descriptor of an instance over `backends`.
 pub fn instance_descriptor(backends: wgpu::Backends) -> wgpu::InstanceDescriptor {
-    wgpu::InstanceDescriptor {
+    let mut descriptor = wgpu::InstanceDescriptor {
         backends,
         flags: instance_flags(),
         ..wgpu::InstanceDescriptor::new_without_display_handle()
-    }
+    };
+    // DirectComposition preserves window alpha; FXC ships with Windows.
+    descriptor.backend_options.dx12.presentation_system = wgpu::Dx12SwapchainKind::DxgiFromVisual;
+    descriptor.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::Fxc;
+    descriptor
 }
 
 /// The backends to enumerate, after the environment has had its say.
@@ -270,7 +274,22 @@ pub fn unavailable(rejections: Vec<(String, String)>) -> GpuUnavailable {
 
 #[cfg(test)]
 mod tests {
-    use super::{describe, instance_flags, parse_backends, sort_key, tiers, unavailable};
+    use super::{
+        describe, instance_descriptor, instance_flags, parse_backends, sort_key, tiers, unavailable,
+    };
+
+    #[test]
+    fn dx12_instances_support_transparency_without_a_dxc_installation() {
+        let descriptor = instance_descriptor(wgpu::Backends::DX12);
+        assert_eq!(
+            descriptor.backend_options.dx12.presentation_system,
+            wgpu::Dx12SwapchainKind::DxgiFromVisual
+        );
+        assert!(matches!(
+            descriptor.backend_options.dx12.shader_compiler,
+            wgpu::Dx12Compiler::Fxc
+        ));
+    }
 
     #[test]
     fn only_debug_instances_validate_indirect_calls() {
